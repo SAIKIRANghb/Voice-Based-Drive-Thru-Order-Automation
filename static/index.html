@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Drive-Thru AI Voice Agent Dashboard</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Main Style Sheet -->
+    <link rel="stylesheet" href="css/style.css">
+    <!-- Socket.IO library -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
+</head>
+<body>
+    <div class="glow-bg"></div>
+    
+    <header>
+        <div class="logo">
+            <i class="fa-solid fa-microchip logo-icon"></i>
+            <span>ANTIGRAVITY <span class="accent-text">VOICE LAB</span></span>
+        </div>
+        <div class="subtitle">Automated Drive-Thru Voice Agent with NLMS AEC & LangGraph</div>
+        <div class="connection-status" id="connection-status">
+            <span class="status-dot disconnected"></span>
+            <span id="status-text">Connecting...</span>
+        </div>
+    </header>
+
+    <main class="dashboard-grid">
+        <!-- Panel 1: Simulation Control & Drive-Thru Lane -->
+        <section class="panel simulation-panel">
+            <div class="panel-header">
+                <h2><i class="fa-solid fa-car"></i> Lane Simulation</h2>
+                <div class="badge">L1 Hardware</div>
+            </div>
+            
+            <div class="lane-view">
+                <div class="road">
+                    <div class="speaker-post" id="speaker-post">
+                        <div class="menu-board-glow"></div>
+                        <i class="fa-solid fa-volume-high speaker-icon"></i>
+                        <span class="speaker-label">Order Here</span>
+                        <div class="decibel-ring" id="decibel-ring"></div>
+                    </div>
+                    <div class="car" id="customer-car">
+                        <i class="fa-solid fa-car-side car-icon"></i>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="sim-actions">
+                <button id="btn-drive-car" class="btn btn-primary">
+                    <i class="fa-solid fa-road"></i> Drive Car to Speaker
+                </button>
+                <button id="btn-reset-session" class="btn btn-secondary">
+                    <i class="fa-solid fa-arrows-rotate"></i> Reset Session
+                </button>
+            </div>
+            
+            <div class="audio-controls">
+                <h3>Voice Capture</h3>
+                <div class="btn-group">
+                    <button id="btn-mic-toggle" class="btn btn-mic" disabled>
+                        <i class="fa-solid fa-microphone"></i> Start Mic Stream
+                    </button>
+                    <button id="btn-simulate-voice" class="btn btn-accent" disabled>
+                        <i class="fa-solid fa-comment-dots"></i> Simulate Speak
+                    </button>
+                </div>
+                <div class="helper-text">
+                    * Microphone mode streams real PCM-16 over WebSockets. "Simulate Speak" sends a text transcript through the same agent turn.
+                </div>
+            </div>
+        </section>
+
+        <!-- Panel 2: Live DSP & Acoustic Echo Cancellation -->
+        <section class="panel dsp-panel">
+            <div class="panel-header">
+                <h2><i class="fa-solid fa-wave-square"></i> L2 DSP / Acoustic Echo Cancellation</h2>
+                <div class="badge">Edge Filter</div>
+            </div>
+            
+            <div class="oscillator-container">
+                <div class="osc-channel">
+                    <div class="osc-label">
+                        <span>Mic Input <span class="gray">(Desired + Echo)</span></span>
+                        <span class="level-indicator" id="raw-db">0 dB</span>
+                    </div>
+                    <canvas id="canvas-raw" class="osc-canvas"></canvas>
+                </div>
+                
+                <div class="osc-channel">
+                    <div class="osc-label">
+                        <span>Speaker Reference <span class="gray">(Pre-DAC Vocoder copy)</span></span>
+                        <span class="level-indicator" id="ref-db">0 dB</span>
+                    </div>
+                    <canvas id="canvas-ref" class="osc-canvas"></canvas>
+                </div>
+                
+                <div class="osc-channel">
+                    <div class="osc-label">
+                        <span>Echo Cancelled <span class="accent-text">(Cleaned PCM to ASR)</span></span>
+                        <span class="level-indicator" id="clean-db">0 dB</span>
+                    </div>
+                    <canvas id="canvas-clean" class="osc-canvas"></canvas>
+                </div>
+            </div>
+            
+            <div class="settings-grid">
+                <div class="setting-item">
+                    <label for="range-mu">NLMS Step Size (μ)</label>
+                    <input type="range" id="range-mu" min="0.005" max="0.2" step="0.005" value="0.05">
+                    <span class="val-display" id="val-mu">0.05</span>
+                </div>
+                
+                <div class="setting-item">
+                    <label for="select-taps">Adaptive Filter Taps (N)</label>
+                    <select id="select-taps">
+                        <option value="256">256 taps (16 ms)</option>
+                        <option value="512" selected>512 taps (32 ms)</option>
+                        <option value="1024">1024 taps (64 ms)</option>
+                    </select>
+                </div>
+
+                <div class="setting-item">
+                    <label for="range-vad">Silero VAD Threshold</label>
+                    <input type="range" id="range-vad" min="0.30" max="0.90" step="0.05" value="0.60">
+                    <span class="val-display" id="val-vad">0.60</span>
+                </div>
+
+                <div class="setting-item toggle-item">
+                    <label for="toggle-echo">Inject Speaker Echo</label>
+                    <label class="switch">
+                        <input type="checkbox" id="toggle-echo" checked>
+                        <span class="slider round"></span>
+                    </label>
+                </div>
+
+                <div class="setting-item">
+                    <label for="range-scale">Echo Scale Factor</label>
+                    <input type="range" id="range-scale" min="0.1" max="1.0" step="0.05" value="0.4">
+                    <span class="val-display" id="val-scale">0.4</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Panel 3: LangGraph Agentic State Flow -->
+        <section class="panel graph-panel">
+            <div class="panel-header">
+                <h2><i class="fa-solid fa-network-wired"></i> LangGraph LLM State Machine</h2>
+                <div class="badge">Agent FSM</div>
+            </div>
+            
+            <div class="graph-nodes-container">
+                <!-- State Graph Node 1 -->
+                <div class="node" id="node-greeting">
+                    <div class="node-icon"><i class="fa-solid fa-handshake"></i></div>
+                    <div class="node-info">
+                        <h3>Greeting</h3>
+                        <p>Greet customer</p>
+                    </div>
+                </div>
+                
+                <div class="flow-arrow"><i class="fa-solid fa-chevron-down"></i></div>
+                
+                <!-- State Graph Node 2 -->
+                <div class="node" id="node-taking_order">
+                    <div class="node-icon"><i class="fa-solid fa-utensils"></i></div>
+                    <div class="node-info">
+                        <h3>Taking Order</h3>
+                        <p>Add items, check stock</p>
+                    </div>
+                    <div class="node-loop"><i class="fa-solid fa-arrows-spin"></i></div>
+                </div>
+                
+                <div class="flow-arrow"><i class="fa-solid fa-chevron-down"></i></div>
+                
+                <!-- State Graph Node 3 -->
+                <div class="node" id="node-confirming">
+                    <div class="node-icon"><i class="fa-solid fa-clipboard-check"></i></div>
+                    <div class="node-info">
+                        <h3>Confirming</h3>
+                        <p>Verify cart & total</p>
+                    </div>
+                </div>
+                
+                <div class="flow-arrow"><i class="fa-solid fa-chevron-down"></i></div>
+                
+                <!-- State Graph Node 4 -->
+                <div class="node" id="node-upsell">
+                    <div class="node-icon"><i class="fa-solid fa-arrow-trend-up"></i></div>
+                    <div class="node-info">
+                        <h3>Upsell</h3>
+                        <p>Suggest high-margin sides</p>
+                    </div>
+                </div>
+                
+                <div class="flow-arrow"><i class="fa-solid fa-chevron-down"></i></div>
+                
+                <!-- State Graph Node 5 -->
+                <div class="node" id="node-closing">
+                    <div class="node-icon"><i class="fa-solid fa-receipt"></i></div>
+                    <div class="node-info">
+                        <h3>Closing</h3>
+                        <p>Direct to next window</p>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="engine-toggles">
+                <div class="toggle-group">
+                    <label>ASR:</label>
+                    <select id="select-asr">
+                        <option value="whisper" selected>Whisper (faster-whisper Local)</option>
+                    </select>
+                </div>
+                <div class="toggle-group">
+                    <label>LLM State:</label>
+                    <select id="select-llm">
+                        <option value="gemini" selected>Gemini API (LangGraph)</option>
+                    </select>
+                </div>
+                <div class="toggle-group">
+                    <label>TTS Synthesizer:</label>
+                    <select id="select-tts">
+                        <option value="gemini" selected>Gemini API (Audio Out)</option>
+                    </select>
+                </div>
+            </div>
+        </section>
+
+        <!-- Panel 4: Dialogue Logs & Order Details -->
+        <section class="panel log-panel">
+            <div class="panel-header">
+                <h2><i class="fa-solid fa-receipt"></i> Active Order & Logs</h2>
+                <div class="badge">Session Data</div>
+            </div>
+            
+            <div class="order-dashboard">
+                <div class="cart-card">
+                    <h3>Current Order Cart</h3>
+                    <ul class="cart-list" id="cart-list">
+                        <li class="empty-cart">No items added yet.</li>
+                    </ul>
+                    <div class="cart-pricing">
+                        <div class="price-row">
+                            <span>Subtotal:</span>
+                            <span id="subtotal-val">$0.00</span>
+                        </div>
+                        <div class="price-row" id="promo-row" style="display: none;">
+                            <span>Discount:</span>
+                            <span id="discount-val" class="green">-$0.00</span>
+                        </div>
+                        <hr>
+                        <div class="price-row total-row">
+                            <span>Grand Total:</span>
+                            <span id="total-val">$0.00</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="dialogue-logs">
+                    <h3>Dialogue Logs</h3>
+                    <div class="logs-container" id="logs-container">
+                        <div class="log-message system">
+                            <span class="time">[00:00:00]</span> Drive-Thru Voice Agent initialized. Click "Drive Car to Speaker" to begin.
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Hallucination Alert Guardrail -->
+            <div class="guardrail-alert" id="guardrail-alert">
+                <div class="alert-content">
+                    <i class="fa-solid fa-shield-halved alert-icon"></i>
+                    <div>
+                        <strong>Hallucination Guard Triggered!</strong>
+                        <p id="guardrail-msg">Off-menu item detected in response. Intercepted and corrected.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Direct Text input simulator -->
+            <div class="text-simulator">
+                <input type="text" id="text-input" placeholder="Type customer message (e.g. 'Can I get two burgers and french fries?')..." disabled>
+                <button id="btn-send-text" class="btn btn-accent" disabled><i class="fa-solid fa-paper-plane"></i> Send</button>
+                <button id="btn-speaker-analytics" class="btn btn-secondary" disabled><i class="fa-solid fa-fingerprint"></i> Analyze Speakers</button>
+            </div>
+        </section>
+    </main>
+
+    <!-- App JavaScript -->
+    <script src="js/app.js"></script>
+</body>
+</html>
