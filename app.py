@@ -193,8 +193,6 @@ def debug_runtime():
         gemini_key_prefix = gemini_key[:6]
         if os.getenv("GEMINI_API_KEY"):
             gemini_key_source = "GEMINI_API_KEY"
-        elif os.getenv("GEMINI_KEY_API"):
-            gemini_key_source = "GEMINI_KEY_API"
         else:
             gemini_key_source = "unknown"
     except Exception as e:
