@@ -1,4 +1,5 @@
 import os
+from voice_agent.data.catalog import legacy_menu
 
 # Audio / DSP settings from the LLD.
 SAMPLE_RATE = 16_000
@@ -24,7 +25,7 @@ NLMS_EPS = 1e-6
 VAD_THRESHOLD = 0.60
 
 # LLM/FSM settings from the LLD.
-TOOL_TIMEOUT_MS = 80
+TOOL_TIMEOUT_MS = int(os.getenv("TOOL_TIMEOUT_MS", "1500"))
 FSM_STATE_TIMEOUT_MS = {
     "greeting": 5_000,
     "taking_order": 8_000,
@@ -33,16 +34,8 @@ FSM_STATE_TIMEOUT_MS = {
     "closing": 4_000,
 }
 
-# Menu Registry
-MENU = {
-    "burger": {"price": 5.99, "stock": 50, "synonyms": ["burgers", "hamburger", "hamburgers", "cheeseburger", "cheeseburgers", "double cheeseburger", "double cheeseburgers"]},
-    "fries": {"price": 2.49, "stock": 100, "synonyms": ["french fries", "fry", "fries"]},
-    "soda": {"price": 1.99, "stock": 200, "synonyms": ["coke", "cokes", "diet coke", "diet cokes", "sprite", "sprites", "soda", "sodas", "drink", "drinks", "pop"]},
-    "nuggets": {"price": 4.49, "stock": 40, "synonyms": ["chicken nuggets", "nuggets", "nugs"]},
-    "shake": {"price": 2.99, "stock": 15, "synonyms": ["milkshake", "milkshakes", "shake", "shakes", "chocolate shake", "vanilla shake", "strawberry shake"]},
-    "onion rings": {"price": 2.99, "stock": 25, "synonyms": ["rings", "onion rings"]},
-    "apple pie": {"price": 1.79, "stock": 0, "synonyms": ["pie", "apple pie"]} # Out of stock for testing!
-}
+# Menu Registry, loaded from the Swiggy-like catalog seed.
+MENU = legacy_menu()
 
 # Whitelist for Hallucination Guard
 MENU_WHITELIST = set(MENU.keys()) | {
@@ -73,25 +66,39 @@ CLARIFY_TEMPLATE = (
 # Prompts for different states
 PROMPTS = {
     "greeting": (
-        "You are a friendly, concise automated drive-thru ordering agent at 'Antigravity Burgers'. "
-        "Your first response must greet the customer enthusiastically and ask what they would like to order. "
-        "Keep it under 15 words."
+        "You are a friendly automated drive-thru ordering agent at 'Antigravity Burgers'. "
+        "Start the buying workflow: greet the customer, mention that you can show top picks or categories, "
+        "and ask what they would like. If relevant product context is provided, mention at most two top items. "
+        "Keep it natural and under 22 words."
     ),
     "taking_order": (
-        "You are taking the customer's order. Call tools like check_inventory and add_to_cart as needed. "
-        "Always summarize what is currently in their cart, specify any out-of-stock items, and ask "
-        "if they would like to add anything else. Be extremely concise. Keep responses under 25 words."
+        "You are in the browse/select/customize stage of a real food-ordering workflow. "
+        "Use list_products(page, page_size, category, query, top) when the customer asks what is available, "
+        "asks for top items, asks by category, or seems undecided; offer the next page only when has_next is true. "
+        "Use search_menu_knowledge for fuzzy questions, recommendations, dietary/category/promo questions, or semantic matches. "
+        "Use get_product_details before answering detailed item questions or asking customization follow-ups. "
+        "Use check_inventory and add_to_cart when the customer names an item and quantity. "
+        "After adding an item, summarize the cart briefly and ask one useful follow-up: size/flavor when relevant, "
+        "or whether they want a side, drink, sauce, or combo add-on. "
+        "If an item is unavailable, apologize, name one close available alternative, and ask whether to add it. "
+        "Do not invent items, variants, prices, stock, or offers. Keep responses under 35 words."
     ),
     "confirming": (
-        "You are confirming the complete order. Summarize the items and quantities, state the total price, "
-        "and ask the customer to confirm if this is correct. Keep it under 25 words."
+        "You are in cart review before checkout. Summarize item quantities, free items, discounts, and total price. "
+        "If the cart lacks a drink or side, ask one final add-on question using provided retrieved/add-on context; "
+        "otherwise ask for confirmation. If the customer changes anything, route back to order taking. "
+        "Do not add new items unless the customer explicitly agrees. Keep it under 35 words."
     ),
     "upsell": (
-        "The customer confirmed their order. Now, attempt to upsell them exactly ONE of our high-margin items "
-        "(e.g., onion rings or a milkshake/shake). Keep it friendly and under 15 words."
+        "The customer confirmed the core order. Make exactly one relevant, low-pressure upsell using suggest_addons "
+        "or retrieved menu context: prefer drinks, sides, shakes, or a promo-compatible item not already in the cart. "
+        "If they accept, use add_to_cart before replying; if they decline, move to checkout. "
+        "Keep it friendly and under 22 words."
     ),
     "closing": (
-        "The order is finalized. Tell the customer their total order amount, thank them, and instruct them "
-        "to drive up to the next window. Keep it under 15 words."
+        "You are closing checkout. Confirm the final cart and total, mention applied promo/free item if any, "
+        "thank the customer, and direct them to the next window for payment/pickup. "
+        "If the customer accepts the previous upsell, call add_to_cart before finalizing. "
+        "If they ask to modify the order, do not finalize; ask the needed follow-up. Keep it under 28 words."
     )
 }
