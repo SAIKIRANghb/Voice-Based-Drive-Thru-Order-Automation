@@ -1,0 +1,159 @@
+{
+  "restaurants": [
+    {
+      "id": "rest_antigravity_burgers",
+      "name": "Antigravity Burgers",
+      "cuisine": ["burgers", "fast food", "shakes"],
+      "rating": 4.5,
+      "branches": [
+        {
+          "id": "branch_drive_thru_001",
+          "name": "Antigravity Burgers Drive-Thru",
+          "city": "Bengaluru",
+          "area": "Indiranagar",
+          "is_open": true,
+          "fulfillment_modes": ["drive_thru", "pickup"],
+          "average_prep_minutes": 8
+        }
+      ]
+    }
+  ],
+  "categories": [
+    {"id": "cat_mains", "name": "Mains", "sort_order": 10},
+    {"id": "cat_sides", "name": "Sides", "sort_order": 20},
+    {"id": "cat_drinks", "name": "Drinks", "sort_order": 30},
+    {"id": "cat_desserts", "name": "Desserts", "sort_order": 40}
+  ],
+  "menu_items": [
+    {
+      "id": "burger",
+      "restaurant_id": "rest_antigravity_burgers",
+      "branch_id": "branch_drive_thru_001",
+      "category_id": "cat_mains",
+      "name": "Burger",
+      "description": "Classic grilled burger with cheese, lettuce, onion, and house sauce.",
+      "price": 5.99,
+      "currency": "USD",
+      "stock": 50,
+      "is_available": true,
+      "is_veg": false,
+      "prep_minutes": 7,
+      "tags": ["bestseller", "main"],
+      "synonyms": ["burgers", "hamburger", "hamburgers", "cheeseburger", "cheeseburgers", "double cheeseburger", "double cheeseburgers"]
+    },
+    {
+      "id": "fries",
+      "restaurant_id": "rest_antigravity_burgers",
+      "branch_id": "branch_drive_thru_001",
+      "category_id": "cat_sides",
+      "name": "Fries",
+      "description": "Crispy salted french fries.",
+      "price": 2.49,
+      "currency": "USD",
+      "stock": 100,
+      "is_available": true,
+      "is_veg": true,
+      "prep_minutes": 4,
+      "tags": ["side", "combo"],
+      "synonyms": ["french fries", "fry", "fries"]
+    },
+    {
+      "id": "soda",
+      "restaurant_id": "rest_antigravity_burgers",
+      "branch_id": "branch_drive_thru_001",
+      "category_id": "cat_drinks",
+      "name": "Soda",
+      "description": "Chilled fountain soda. Coke, Diet Coke, and Sprite are available.",
+      "price": 1.99,
+      "currency": "USD",
+      "stock": 200,
+      "is_available": true,
+      "is_veg": true,
+      "prep_minutes": 1,
+      "tags": ["drink", "combo"],
+      "synonyms": ["coke", "cokes", "diet coke", "diet cokes", "sprite", "sprites", "soda", "sodas", "drink", "drinks", "pop"]
+    },
+    {
+      "id": "nuggets",
+      "restaurant_id": "rest_antigravity_burgers",
+      "branch_id": "branch_drive_thru_001",
+      "category_id": "cat_mains",
+      "name": "Nuggets",
+      "description": "Six-piece crispy chicken nuggets with dipping sauce.",
+      "price": 4.49,
+      "currency": "USD",
+      "stock": 40,
+      "is_available": true,
+      "is_veg": false,
+      "prep_minutes": 5,
+      "tags": ["main", "kids"],
+      "synonyms": ["chicken nuggets", "nuggets", "nugs"]
+    },
+    {
+      "id": "shake",
+      "restaurant_id": "rest_antigravity_burgers",
+      "branch_id": "branch_drive_thru_001",
+      "category_id": "cat_drinks",
+      "name": "Shake",
+      "description": "Thick milkshake in chocolate, vanilla, or strawberry.",
+      "price": 2.99,
+      "currency": "USD",
+      "stock": 15,
+      "is_available": true,
+      "is_veg": true,
+      "prep_minutes": 3,
+      "tags": ["drink", "dessert", "upsell"],
+      "synonyms": ["milkshake", "milkshakes", "shake", "shakes", "chocolate shake", "vanilla shake", "strawberry shake"]
+    },
+    {
+      "id": "onion rings",
+      "restaurant_id": "rest_antigravity_burgers",
+      "branch_id": "branch_drive_thru_001",
+      "category_id": "cat_sides",
+      "name": "Onion Rings",
+      "description": "Crunchy battered onion rings.",
+      "price": 2.99,
+      "currency": "USD",
+      "stock": 25,
+      "is_available": true,
+      "is_veg": true,
+      "prep_minutes": 4,
+      "tags": ["side", "upsell"],
+      "synonyms": ["rings", "onion rings"]
+    },
+    {
+      "id": "apple pie",
+      "restaurant_id": "rest_antigravity_burgers",
+      "branch_id": "branch_drive_thru_001",
+      "category_id": "cat_desserts",
+      "name": "Apple Pie",
+      "description": "Warm apple pie. Currently unavailable.",
+      "price": 1.79,
+      "currency": "USD",
+      "stock": 0,
+      "is_available": false,
+      "is_veg": true,
+      "prep_minutes": 4,
+      "tags": ["dessert"],
+      "synonyms": ["pie", "apple pie"]
+    }
+  ],
+  "offers": [
+    {
+      "id": "offer_discount10",
+      "code": "DISCOUNT10",
+      "title": "10% off",
+      "discount_type": "percent",
+      "value": 0.1,
+      "is_active": true
+    },
+    {
+      "id": "offer_freefries",
+      "code": "FREEFRIES",
+      "title": "Free fries",
+      "discount_type": "free_item",
+      "item_id": "fries",
+      "is_active": true
+    }
+  ]
+}
