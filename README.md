@@ -13,6 +13,7 @@ The app serves a browser dashboard where a simulated car starts a lane session. 
 - Local `faster-whisper` ASR.
 - LangGraph finite-state ordering flow backed by Gemini.
 - Tool-calling order logic for inventory, pricing, cart updates, and promo codes.
+- Swiggy-like restaurant catalog seed plus optional Qdrant RAG for menu, inventory, and promo retrieval.
 - Hallucination guard that intercepts off-menu food items before TTS.
 - Gemini TTS with PCM output buffered back into the echo-cancellation reference path.
 - Optional live and offline speaker diarization with SpeechBrain ECAPA embeddings.
@@ -31,6 +32,10 @@ The app serves a browser dashboard where a simulated car starts a lane session. 
 |   `-- js/app.js                  # Socket.IO client, mic capture, PCM playback, UI updates
 |-- voice_agent/
 |   |-- config.py                  # Audio constants, menu registry, prompts, env helpers
+|   |-- data/
+|   |   |-- swiggy_seed.json       # Restaurant, branch, menu, inventory, and offer seed data
+|   |   |-- catalog.py             # Catalog loader and menu document builder
+|   |   `-- qdrant_rag.py          # Qdrant-backed retrieval with local fallback
 |   |-- asr/
 |   |   |-- base.py
 |   |   `-- whisper.py             # faster-whisper adapter and model cache setup
@@ -52,6 +57,7 @@ The app serves a browser dashboard where a simulated car starts a lane session. 
 |       |-- circular_buffer.py     # Speaker reference buffer for AEC
 |       `-- verify_diarization.py  # Speaker analytics helper
 `-- tests/
+    |-- test_catalog_rag.py
     |-- test_config.py
     |-- test_nodes.py
     `-- test_vad.py
@@ -134,9 +140,10 @@ The active state is stored per Socket.IO connection. Each turn carries:
 6. The transcript is sent to `run_agent_turn`.
 7. LangGraph routes the turn to the appropriate node.
 8. Gemini generates the response and can call tools such as `check_inventory`, `get_price`, `add_to_cart`, and `apply_promo`.
-9. The hallucination guard validates menu mentions.
-10. Gemini TTS synthesizes response audio, and the PCM is written to the circular reference buffer used by AEC.
-11. The browser receives `agent_response`, plays audio, highlights the FSM node, and updates cart totals.
+9. For fuzzy menu questions, recommendations, and promo/category lookup, the agent can call `search_menu_knowledge`, backed by Qdrant when configured.
+10. The hallucination guard validates menu mentions.
+11. Gemini TTS synthesizes response audio, and the PCM is written to the circular reference buffer used by AEC.
+12. The browser receives `agent_response`, plays audio, highlights the FSM node, and updates cart totals.
 
 ## Socket.IO Events
 
@@ -221,7 +228,8 @@ Important `.env` settings:
 | `GEMINI_API_KEY` | Required API key for Gemini LLM and Gemini TTS. |
 | `GEMINI_LLM_MODEL` | Gemini model used by LangGraph nodes. |
 | `GEMINI_LLM_TIMEOUT_SECONDS` | Request timeout for Gemini LLM calls. |
-| `GEMINI_TTS_MODEL` | Gemini TTS model. |
+| `TOOL_TIMEOUT_MS` | Timeout for agent tool calls such as RAG and catalog lookup. |
+| `GEMINI_TTS_MODEL` | Gemini TTS model, such as `gemini-3.1-flash-tts-preview`, `gemini-2.5-flash-preview-tts`, or `gemini-2.5-pro-preview-tts`. |
 | `GEMINI_TTS_VOICE` | Gemini TTS prebuilt voice name. |
 | `ENABLE_GEMINI_TTS` | Set to `0` to skip backend TTS and continue text-only. |
 | `WHISPER_MODEL_SIZE` | faster-whisper model size, such as `medium.en`. |
@@ -233,18 +241,42 @@ Important `.env` settings:
 | `PRELOAD_WHISPER_ASR` | Load Whisper at startup when using `run.py`. |
 | `LIVE_DIARIZATION` | Enable live speaker clustering for completed utterances. |
 | `SPEAKER_ENROLLMENT_PATH` | Optional JSON file of enrolled speaker embeddings. |
+| `QDRANT_URL` | Optional hosted Qdrant URL. Leave empty to use local embedded Qdrant. |
+| `QDRANT_API_KEY` | Optional API key for Qdrant Cloud or secured Qdrant. |
+| `QDRANT_COLLECTION` | Collection used for menu and offer retrieval documents. |
+| `QDRANT_LOCAL_PATH` | Local embedded Qdrant storage path, default `cache/qdrant`. |
+| `QDRANT_VECTOR_SIZE` | Dense vector size for the configured SentenceTransformers model. |
+| `SENTENCE_TRANSFORMER_MODEL` | SentenceTransformers model used when indexing/searching Qdrant. |
+| `SENTENCE_TRANSFORMER_CACHE` | Optional model cache directory. Leave blank to use Hugging Face's default cache. |
+| `SENTENCE_TRANSFORMER_LOCAL_FILES_ONLY` | Set to `1` after the model is cached to prevent any download attempts. |
 | `SOCKETIO_ASYNC_MODE` | Defaults to `threading`; `eventlet` is opt-in. |
 | `SERVER_HOST` / `SERVER_PORT` | Server bind host and port. |
 | `DEBUG` | Flask/Socket.IO debug mode. |
 
 ## Menu and Tools
 
-The menu registry lives in `voice_agent/config.py`. It includes item price, stock, and synonyms. The LLM can call tools in `voice_agent/llm/tools.py`:
+The source catalog lives in `voice_agent/data/swiggy_seed.json`, with a relational reference schema in `docs/database_schema.sql`. `voice_agent/config.py` exposes that seed in the app's existing `MENU` shape so older order logic keeps working.
+
+Qdrant RAG lives in `voice_agent/data/qdrant_rag.py`. On startup/use it indexes menu and promo documents into `QDRANT_COLLECTION` with SentenceTransformers embeddings. The SentenceTransformers model is loaded through a process-wide cache and can reuse either Hugging Face's default cache or `SENTENCE_TRANSFORMER_CACHE`; after the first successful download, set `SENTENCE_TRANSFORMER_LOCAL_FILES_ONLY=1` to prevent network fetches. If `QDRANT_URL` is empty, it uses embedded local Qdrant under `cache/qdrant`; if Qdrant or the embedding model fail locally, retrieval falls back to deterministic keyword matching.
+
+The catalog/RAG/tool layer follows small SOLID-style boundaries:
+
+- `voice_agent/data/interfaces.py` defines repository, catalog, retriever, and embedding interfaces.
+- `voice_agent/data/catalog.py` contains a JSON repository plus a catalog domain service.
+- `voice_agent/data/qdrant_rag.py` separates embedding strategy, local fallback retrieval, and Qdrant retrieval.
+- `voice_agent/data/factories.py` provides singleton-style service factories.
+- `voice_agent/llm/tool_services.py` is the injectable application service behind LangChain tools.
+
+The LLM can call tools in `voice_agent/llm/tools.py`:
 
 - `check_inventory(item_id)`
 - `get_price(item)`
+- `list_products(page, page_size, category, query, top)`
+- `get_product_details(item)`
+- `suggest_addons(item, cart_items)`
 - `add_to_cart(item, qty)`
 - `apply_promo(code)`
+- `search_menu_knowledge(query)`
 
 Supported promo codes:
 
@@ -262,6 +294,8 @@ python -m unittest discover -s tests
 The current tests cover:
 
 - Gemini API key environment resolution.
+- Swiggy-like catalog loading and local RAG fallback.
+- Dependency injection for menu retrieval services.
 - VAD padding and empty-frame behavior.
 - LangGraph node cart/total updates with mocked Gemini agent responses.
 
