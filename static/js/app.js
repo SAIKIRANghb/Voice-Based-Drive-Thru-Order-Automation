@@ -53,6 +53,7 @@ let micStream = null;
 let micNode = null;
 let scriptProcessor = null;
 let isStreaming = false;
+let audioStreamId = 0;
 let micSource = null;
 let muteGain = null;
 
@@ -292,6 +293,7 @@ elBtnMicToggle.addEventListener('click', () => {
 
 async function startMicStream() {
     try {
+        const streamId = audioStreamId + 1;
         micStream = await navigator.mediaDevices.getUserMedia({
             audio: {
                 channelCount: 1,
@@ -312,9 +314,13 @@ async function startMicStream() {
         let inputBuffer = [];
         let readPosition = 0;
         let sampleBuffer = [];
+        audioStreamId = streamId;
         
         scriptProcessor = audioContext.createScriptProcessor(1024, 1, 1);
         scriptProcessor.onaudioprocess = (e) => {
+            if (!isStreaming || streamId !== audioStreamId) {
+                return;
+            }
             const inputData = e.inputBuffer.getChannelData(0);
 
             for (let i = 0; i < inputData.length; i++) {
@@ -333,8 +339,11 @@ async function startMicStream() {
 
                 if (sampleBuffer.length === frameSize) {
                     const int16Array = new Int16Array(sampleBuffer);
-                    if (isStreaming) {
-                        socket.emit('audio_frame', int16Array.buffer);
+                    if (isStreaming && streamId === audioStreamId) {
+                        socket.emit('audio_frame', {
+                            stream_id: streamId,
+                            audio: int16Array.buffer
+                        });
                     }
                     sampleBuffer = [];
                 }
@@ -356,6 +365,7 @@ async function startMicStream() {
         muteGain.connect(audioContext.destination);
         
         isStreaming = true;
+        socket.emit('audio_stream_started', { stream_id: streamId });
         elBtnMicToggle.classList.add('streaming');
         elBtnMicToggle.innerHTML = '<i class="fa-solid fa-microphone-slash"></i> Stop Mic Stream';
         logSystem(`Microphone streaming active (${Math.round(inputSampleRate)} Hz captured, PCM-16 @ 16 kHz sent).`);
@@ -366,10 +376,11 @@ async function startMicStream() {
 }
 
 function stopMicStream() {
-    if (isStreaming && socket.connected) {
-        socket.emit('audio_stream_stopped', {});
-    }
+    const streamId = audioStreamId;
     isStreaming = false;
+    if (socket.connected) {
+        socket.emit('audio_stream_stopped', { stream_id: streamId });
+    }
     elBtnMicToggle.classList.remove('streaming');
     elBtnMicToggle.innerHTML = '<i class="fa-solid fa-microphone"></i> Start Mic Stream';
     

@@ -35,16 +35,22 @@ The app serves a browser dashboard where a simulated car starts a lane session. 
 |   |-- data/
 |   |   |-- swiggy_seed.json       # Restaurant, branch, menu, inventory, and offer seed data
 |   |   |-- catalog.py             # Catalog loader and menu document builder
+|   |   |-- factories.py           # Singleton-style catalog/RAG service providers
+|   |   |-- interfaces.py          # Catalog, retriever, and embedding protocols
 |   |   `-- qdrant_rag.py          # Qdrant-backed retrieval with local fallback
 |   |-- asr/
 |   |   |-- base.py
+|   |   |-- factories.py           # ASR engine factory
 |   |   `-- whisper.py             # faster-whisper adapter and model cache setup
 |   |-- dsp/
 |   |   |-- aec.py                 # NLMS adaptive echo cancellation
 |   |   `-- vad.py                 # Silero/energy VAD gate
 |   |-- llm/
 |   |   |-- graph.py               # LangGraph state machine
+|   |   |-- interfaces.py          # LLM provider protocols
 |   |   |-- nodes.py               # Node implementations and Gemini calls
+|   |   |-- providers.py           # Gemini LLM provider adapter
+|   |   |-- tool_services.py       # Injectable service behind LangChain tools
 |   |   |-- tools.py               # Menu/order tools exposed to the LLM
 |   |   `-- guardrails.py          # Off-menu response guard
 |   |-- spkrec/
@@ -52,6 +58,7 @@ The app serves a browser dashboard where a simulated car starts a lane session. 
 |   |   `-- diarization.py         # Utterance clustering and speaker analytics
 |   |-- tts/
 |   |   |-- base.py
+|   |   |-- factories.py           # TTS engine factory
 |   |   `-- gemini.py              # Gemini TTS adapter
 |   `-- utils/
 |       |-- circular_buffer.py     # Speaker reference buffer for AEC
@@ -59,6 +66,8 @@ The app serves a browser dashboard where a simulated car starts a lane session. 
 `-- tests/
     |-- test_catalog_rag.py
     |-- test_config.py
+    |-- test_gemini_tts.py
+    |-- test_graph_routing.py
     |-- test_nodes.py
     `-- test_vad.py
 ```
@@ -69,7 +78,7 @@ Runtime artifacts such as `cache/`, `__pycache__/`, `server.*.log`, and `crash.l
 
 ```text
 Browser Dashboard
-  |  start_session / send_text / audio_frame / update_settings
+  |  start_session / send_text / audio_stream_started / audio_frame / update_settings
   v
 Flask + Socket.IO (app.py)
   |
@@ -134,9 +143,9 @@ The active state is stored per Socket.IO connection. Each turn carries:
 
 1. The browser connects through Socket.IO and asks the user to drive the car to the speaker.
 2. `start_session` initializes a per-client session and runs the initial greeting turn.
-3. If microphone mode is enabled, the browser captures audio, resamples it to 16 kHz PCM-16, and streams `audio_frame` packets.
+3. If microphone mode is enabled, the browser starts an audio stream, captures audio, resamples it to 16 kHz PCM-16, and streams 512-sample `audio_frame` packets tagged with the active stream id.
 4. The backend optionally simulates speaker echo, runs NLMS echo cancellation, emits DSP levels, and applies VAD.
-5. When speech ends, buffered audio is transcribed by `WhisperASR`.
+5. When speech ends, buffered audio longer than `MIN_TRANSCRIPTION_SECONDS` is transcribed by the configured ASR engine.
 6. The transcript is sent to `run_agent_turn`.
 7. LangGraph routes the turn to the appropriate node.
 8. Gemini generates the response and can call tools such as `check_inventory`, `get_price`, `add_to_cart`, and `apply_promo`.
@@ -151,8 +160,9 @@ Client to server:
 
 - `start_session`: reset and begin a new voice lane session.
 - `send_text`: send a typed or simulated transcript through the same agent path.
-- `audio_frame`: stream raw PCM-16 audio frames.
-- `audio_stream_stopped`: force finalization of any buffered speech.
+- `audio_stream_started`: mark a browser microphone stream as active and reset stream counters.
+- `audio_frame`: stream 16 kHz PCM-16 audio frames, preferably with `{stream_id, audio}` so stale frames are ignored.
+- `audio_stream_stopped`: stop the active stream and force finalization of any buffered speech.
 - `reset_session`: clear backend and UI session state.
 - `run_speaker_analytics`: run offline diarization over captured utterances.
 - `update_settings`: update NLMS, VAD, and echo simulation parameters.
@@ -228,6 +238,9 @@ Important `.env` settings:
 | `GEMINI_API_KEY` | Required API key for Gemini LLM and Gemini TTS. |
 | `GEMINI_LLM_MODEL` | Gemini model used by LangGraph nodes. |
 | `GEMINI_LLM_TIMEOUT_SECONDS` | Request timeout for Gemini LLM calls. |
+| `GEMINI_ROUTER_MODEL` | Optional Gemini model override for semantic FSM routing. |
+| `GEMINI_ROUTER_TIMEOUT_SECONDS` | Optional request timeout for the semantic router. |
+| `GEMINI_ROUTER_RETRIES` | Optional retry count for semantic routing. |
 | `TOOL_TIMEOUT_MS` | Timeout for agent tool calls such as RAG and catalog lookup. |
 | `GEMINI_TTS_MODEL` | Gemini TTS model, such as `gemini-3.1-flash-tts-preview`, `gemini-2.5-flash-preview-tts`, or `gemini-2.5-pro-preview-tts`. |
 | `GEMINI_TTS_VOICE` | Gemini TTS prebuilt voice name. |
@@ -236,9 +249,11 @@ Important `.env` settings:
 | `WHISPER_DEVICE` | `cuda` or `cpu`. |
 | `WHISPER_COMPUTE_TYPE` | Typical values: `float16`, `int8`. |
 | `WHISPER_CACHE_DIR` | Optional local model cache directory. |
+| `MIN_TRANSCRIPTION_SECONDS` | Ignore shorter buffered audio blips before ASR, default `0.5`. |
 | `USE_SILERO_VAD` | Set to `0` to use lightweight RMS energy VAD. |
 | `PRELOAD_SILERO_VAD` | Load Silero at startup when using `run.py`. |
 | `PRELOAD_WHISPER_ASR` | Load Whisper at startup when using `run.py`. |
+| `PRELOAD_MENU_RAG` | Preload and index menu retrieval before the first customer turn. |
 | `LIVE_DIARIZATION` | Enable live speaker clustering for completed utterances. |
 | `SPEAKER_ENROLLMENT_PATH` | Optional JSON file of enrolled speaker embeddings. |
 | `QDRANT_URL` | Optional hosted Qdrant URL. Leave empty to use local embedded Qdrant. |
@@ -246,9 +261,10 @@ Important `.env` settings:
 | `QDRANT_COLLECTION` | Collection used for menu and offer retrieval documents. |
 | `QDRANT_LOCAL_PATH` | Local embedded Qdrant storage path, default `cache/qdrant`. |
 | `QDRANT_VECTOR_SIZE` | Dense vector size for the configured SentenceTransformers model. |
+| `QDRANT_RECREATE_COLLECTION_ON_MISMATCH` | Recreate the configured menu collection when its vector schema does not match the app's embedding shape. |
 | `SENTENCE_TRANSFORMER_MODEL` | SentenceTransformers model used when indexing/searching Qdrant. |
 | `SENTENCE_TRANSFORMER_CACHE` | Optional model cache directory. Leave blank to use Hugging Face's default cache. |
-| `SENTENCE_TRANSFORMER_LOCAL_FILES_ONLY` | Set to `1` after the model is cached to prevent any download attempts. |
+| `SENTENCE_TRANSFORMER_LOCAL_FILES_ONLY` | `auto` downloads the model when missing and uses the local cache later; set `1` only for fully offline runs after the model is cached. |
 | `SOCKETIO_ASYNC_MODE` | Defaults to `threading`; `eventlet` is opt-in. |
 | `SERVER_HOST` / `SERVER_PORT` | Server bind host and port. |
 | `DEBUG` | Flask/Socket.IO debug mode. |
@@ -257,7 +273,9 @@ Important `.env` settings:
 
 The source catalog lives in `voice_agent/data/swiggy_seed.json`, with a relational reference schema in `docs/database_schema.sql`. `voice_agent/config.py` exposes that seed in the app's existing `MENU` shape so older order logic keeps working.
 
-Qdrant RAG lives in `voice_agent/data/qdrant_rag.py`. On startup/use it indexes menu and promo documents into `QDRANT_COLLECTION` with SentenceTransformers embeddings. The SentenceTransformers model is loaded through a process-wide cache and can reuse either Hugging Face's default cache or `SENTENCE_TRANSFORMER_CACHE`; after the first successful download, set `SENTENCE_TRANSFORMER_LOCAL_FILES_ONLY=1` to prevent network fetches. If `QDRANT_URL` is empty, it uses embedded local Qdrant under `cache/qdrant`; if Qdrant or the embedding model fail locally, retrieval falls back to deterministic keyword matching.
+Qdrant RAG lives in `voice_agent/data/qdrant_rag.py`. On startup/use it indexes menu and promo documents into `QDRANT_COLLECTION` with SentenceTransformers embeddings. The default `sentence-transformers/all-MiniLM-L6-v2` model produces 384-dimensional vectors, so the Qdrant collection must be configured with `QDRANT_VECTOR_SIZE=384` and cosine distance. The SentenceTransformers model is loaded through a process-wide cache and can reuse either Hugging Face's default cache or `SENTENCE_TRANSFORMER_CACHE`; with `SENTENCE_TRANSFORMER_LOCAL_FILES_ONLY=auto`, the app downloads the model if it is missing and uses the local cache on later runs. If `QDRANT_URL` is empty, it uses embedded local Qdrant under `cache/qdrant`; if Qdrant or the embedding model fail locally, retrieval falls back to deterministic keyword matching.
+
+If an existing Qdrant collection was created without the expected vector schema, Qdrant rejects inserts with errors such as `Not existing vector name`. That is a collection/schema mismatch: the app is sending unnamed 384-dimensional vectors, but the collection does not have a compatible unnamed vector slot. When `QDRANT_RECREATE_COLLECTION_ON_MISMATCH=1`, the app recreates only the configured menu collection with the correct 384-dimensional cosine vector config, then upserts the menu and offer embeddings again.
 
 The catalog/RAG/tool layer follows small SOLID-style boundaries:
 
@@ -283,6 +301,48 @@ Supported promo codes:
 - `DISCOUNT10`: applies 10% off.
 - `FREEFRIES`: adds free fries when available.
 
+## Challenges And Solutions
+
+### Semantic state routing
+
+Challenge: a drive-thru conversation does not move through states by keywords alone. Customers say things like "that works", "make it a meal", "actually remove the fries", or "I'm ready to pay", and the correct next state depends on cart state, the last agent response, and whether the user is browsing, correcting, confirming, accepting an upsell, or reopening the order. A fixed keyword router made the workflow brittle because the same phrase can mean different things in `taking_order`, `confirming`, `upsell`, and `closing`.
+
+Solution: `voice_agent/llm/graph.py` uses semantic routing to choose the next LangGraph node from an explicit transition map. The router receives the current node, expected next node, cart, last agent response, and latest customer utterance, then returns a constrained JSON decision such as `{"next_node":"confirming"}`. This keeps the buying flow closer to a real checkout while still limiting routing to known FSM states.
+
+### SentenceTransformer model cache
+
+Challenge: Qdrant can store and search vectors, but it does not create embeddings for this app. The local SentenceTransformers model must be available to embed both catalog documents and user queries. If the model is missing and runtime is forced offline, Qdrant cannot be indexed or searched semantically.
+
+Solution: keep `SENTENCE_TRANSFORMER_LOCAL_FILES_ONLY=auto` for normal development. The app downloads the configured model into `SENTENCE_TRANSFORMER_CACHE` when missing, then uses the cached files on later runs. You can also preload manually:
+
+```powershell
+python scripts/preload_sentence_transformer.py
+```
+
+### Qdrant collection mismatch
+
+Challenge: the app's default embedding model creates 384-dimensional vectors, but an existing Qdrant collection may have been created with no vector config, a different vector size, named vectors, or a different distance metric. That mismatch causes Qdrant upserts/searches to fail even though the collection itself exists.
+
+Solution: `QDRANT_RECREATE_COLLECTION_ON_MISMATCH=1` lets the app detect an incompatible menu collection and recreate `QDRANT_COLLECTION` with the expected unnamed 384-dimensional cosine vector schema. After recreation, startup preload indexes the JSON menu and promo documents into Qdrant before the first customer turn.
+
+Manual preload/index command:
+
+```powershell
+python scripts/preload_menu_rag.py
+```
+
+### Browser audio stream identity
+
+Challenge: browser microphone streams do not stop synchronously. After the user resets the session, toggles the microphone, or starts a new lane run, an old `AudioWorklet` or socket callback can still deliver a few late `audio_frame` packets. Without a stream identifier, those stale packets look identical to frames from the current microphone stream. That can pollute the new utterance buffer, trigger VAD/ASR at the wrong time, or finalize speech for a stream the user already stopped.
+
+Solution: the frontend now increments a `streamId` each time `startMicStream()` creates a new microphone pipeline. It sends that id with `audio_stream_started`, every `audio_frame`, and `audio_stream_stopped`. The backend stores the active id in the per-client session as `audio_stream_id`, resets frame counters when a new stream starts, and ignores frames or stop events whose `stream_id` does not match the active stream. Session reset also clears the active stream state, so a restarted lane begins with clean audio/VAD/AEC buffers.
+
+### Microphone sample rate and VAD frame size
+
+The microphone path keeps a fixed ASR/DSP sample rate of 16 kHz PCM-16 mono. Browser devices may capture at a different hardware rate, such as 48 kHz, but the frontend resamples before sending audio to the backend.
+
+The stream chunk size is intentionally 512 samples, not the older 320-sample 20 ms frame. Silero VAD rejects chunks shorter than 512 samples at 16 kHz, so the browser emits 512-sample frames and the backend pads any shorter defensive edge-case frame before calling Silero. End-of-speech detection counts actual silence samples instead of assuming a fixed 20 ms frame duration, so changing the chunk size does not change the silence timeout.
+
 ## Testing
 
 Run the unit tests:
@@ -296,13 +356,16 @@ The current tests cover:
 - Gemini API key environment resolution.
 - Swiggy-like catalog loading and local RAG fallback.
 - Dependency injection for menu retrieval services.
+- Semantic graph routing decisions with mocked router calls.
+- Gemini TTS model alias normalization.
 - VAD padding and empty-frame behavior.
 - LangGraph node cart/total updates with mocked Gemini agent responses.
 
 ## Development Notes
 
-- `run.py` is the preferred local entry point because it loads `.env`, logs runtime configuration, and can preload ASR/VAD.
+- `run.py` is the preferred local entry point because it loads `.env`, logs runtime configuration, and can preload ASR/VAD/menu RAG.
 - `app.py` also has a direct `__main__` block, but the runner is cleaner for development.
+- The browser sends stream ids with microphone packets, and the backend ignores stale audio frames after a stream restart.
 - The text simulator in the dashboard sends `send_text` events and bypasses ASR, which is useful for testing order logic without microphone/model latency.
 - The microphone path and text simulator converge at `process_user_text`, so both exercise the same LangGraph agent flow after transcription.
 - The hallucination guard runs before TTS so off-menu generated responses are corrected before being spoken.

@@ -26,10 +26,10 @@ from flask import Flask, request, send_from_directory
 from flask_socketio import SocketIO, emit
 import numpy as np
 
+from voice_agent.asr.factories import build_asr_engine
 from voice_agent.dsp.aec import NLMSFilter
 from voice_agent.dsp.vad import VADGate
-from voice_agent.asr.whisper import WhisperASR
-from voice_agent.tts.gemini import GeminiTTS
+from voice_agent.tts.factories import build_tts_engine
 from voice_agent.llm.graph import run_agent_turn
 from voice_agent.utils.circular_buffer import CircularReferenceBuffer
 from voice_agent.config import (
@@ -51,19 +51,19 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode=SOCKETIO_ASYNC_MOD
 sessions = {}
 
 # Initialize real model components lazily so server startup remains responsive.
-whisper_asr = None
+asr_engine = None
 speaker_verifier = None
 speaker_diarizer = None
-gemini_tts = None
+tts_engine = None
 
 def env_flag(name: str, default: str = "0") -> bool:
     return os.getenv(name, default).lower() in {"1", "true", "yes", "on"}
 
 def get_tts_engine():
-    global gemini_tts
-    if gemini_tts is None:
-        gemini_tts = GeminiTTS()
-    return gemini_tts
+    global tts_engine
+    if tts_engine is None:
+        tts_engine = build_tts_engine()
+    return tts_engine
 
 def get_speaker_verifier():
     global speaker_verifier
@@ -115,6 +115,8 @@ def get_session_components(sid):
             "audio_inactive_warned": False,
             "audio_error_warned": False,
             "audio_frame_count": 0,
+            "audio_streaming": False,
+            "audio_stream_id": 0,
             "speech_frame_count": 0,
             "vad_idle_notice_count": 0,
             
@@ -163,6 +165,8 @@ def reset_session(sess):
     sess["audio_inactive_warned"] = False
     sess["audio_error_warned"] = False
     sess["audio_frame_count"] = 0
+    sess["audio_streaming"] = False
+    sess["audio_stream_id"] = 0
     sess["speech_frame_count"] = 0
     sess["vad_idle_notice_count"] = 0
     sess["analytics_utterances"] = []
@@ -307,11 +311,17 @@ def finalize_buffered_speech(sid: str, sess, reason: str = "silence"):
 
     full_phrase = np.array(sess["mic_buffer"], dtype=np.int16)
     sess["mic_buffer"] = []
+    duration_seconds = len(full_phrase) / SAMPLE_RATE
+    min_transcription_seconds = float(os.getenv("MIN_TRANSCRIPTION_SECONDS", "0.5"))
+    if duration_seconds < min_transcription_seconds:
+        emit('asr_status', {"message": f"Ignored {duration_seconds:.1f}s audio blip; waiting for a fuller phrase."})
+        return
+
     if full_phrase.size > 0:
         sess["analytics_utterances"].append(full_phrase.copy())
     speaker_info = diarize_live_utterance(full_phrase, sess)
 
-    emit('asr_status', {"message": f"Speech {reason}. Transcribing {len(full_phrase) / SAMPLE_RATE:.1f}s of audio..."})
+    emit('asr_status', {"message": f"Speech {reason}. Transcribing {duration_seconds:.1f}s of audio..."})
     transcription = trigger_transcription(full_phrase, sess)
     if transcription.strip():
         emit('customer_speech', {"text": transcription, **speaker_info})
@@ -320,6 +330,21 @@ def finalize_buffered_speech(sid: str, sess, reason: str = "silence"):
             emit('agent_response', response)
     else:
         emit('asr_status', {"message": "No speech text detected. Try speaking a little louder or closer to the mic."})
+
+@socketio.on('audio_stream_started')
+def handle_audio_stream_started(data=None):
+    sid = request.sid
+    sess = get_session_components(sid)
+    data = data or {}
+    stream_id = int(data.get("stream_id") or 0)
+    sess["audio_streaming"] = True
+    sess["audio_stream_id"] = stream_id
+    sess["audio_frame_count"] = 0
+    sess["speech_frame_count"] = 0
+    sess["vad_idle_notice_count"] = 0
+    sess["audio_inactive_warned"] = False
+    sess["audio_error_warned"] = False
+    logging.info("Audio stream %s started for %s.", stream_id, sid)
 
 @socketio.on('audio_frame')
 def handle_audio_frame(data):
@@ -332,6 +357,18 @@ def handle_audio_frame(data):
     if data is None:
         return
 
+    stream_id = None
+    payload = data
+    if isinstance(data, dict):
+        stream_id = int(data.get("stream_id") or 0)
+        payload = data.get("audio")
+
+    if not sess.get("audio_streaming", False):
+        return
+    if stream_id is not None and stream_id != sess.get("audio_stream_id"):
+        logging.debug("Ignoring stale audio frame for %s: stream=%s active=%s", sid, stream_id, sess.get("audio_stream_id"))
+        return
+
     if not sess.get("session_active", False):
         if not sess.get("audio_inactive_warned", False):
             sess["audio_inactive_warned"] = True
@@ -340,7 +377,7 @@ def handle_audio_frame(data):
 
     try:
         # Decode audio payload (raw binary)
-        raw_pcm = np.frombuffer(data, dtype=np.int16)
+        raw_pcm = np.frombuffer(payload, dtype=np.int16)
         if raw_pcm.size == 0:
             return
         sess["audio_frame_count"] += 1
@@ -420,6 +457,13 @@ def handle_audio_frame(data):
 def handle_audio_stream_stopped(data=None):
     sid = request.sid
     sess = get_session_components(sid)
+    data = data or {}
+    stream_id = int(data.get("stream_id") or sess.get("audio_stream_id") or 0)
+    if stream_id != sess.get("audio_stream_id"):
+        logging.debug("Ignoring stale audio stop for %s: stream=%s active=%s", sid, stream_id, sess.get("audio_stream_id"))
+        return
+
+    sess["audio_streaming"] = False
     if not sess.get("session_active", False):
         return
     if sess.get("is_speech_active") or sess.get("mic_buffer"):
@@ -432,25 +476,24 @@ def handle_audio_stream_stopped(data=None):
         emit('asr_status', {"message": "Microphone stopped. No speech was buffered for transcription."})
 
 def trigger_transcription(audio_data, sess) -> str:
-    """Executes real Whisper ASR on accumulated speech data."""
-    # Use real Whisper ASR for transcription
-    global whisper_asr
-    if whisper_asr is None:
+    """Executes the configured ASR engine on accumulated speech data."""
+    global asr_engine
+    if asr_engine is None:
         emit('asr_status', {"message": "Loading Whisper ASR model. First transcription can take a while if the model is not cached."})
-        whisper_asr = WhisperASR()
+        asr_engine = build_asr_engine()
         emit('asr_status', {"message": "Whisper ASR model loaded. Decoding speech..."})
     else:
         emit('asr_status', {"message": "Decoding speech with Whisper ASR..."})
-    return whisper_asr.transcribe(audio_data)
+    return asr_engine.transcribe(audio_data)
 
 def preload_whisper_asr():
     """Load ASR at startup so model cache/download work happens before mic use."""
-    global whisper_asr
-    if whisper_asr is None:
+    global asr_engine
+    if asr_engine is None:
         logging.info("Preloading Whisper ASR model...")
-        whisper_asr = WhisperASR()
+        asr_engine = build_asr_engine()
         logging.info("Whisper ASR preload complete.")
-    return whisper_asr
+    return asr_engine
 
 def preload_silero_vad():
     """Load the required Silero VAD at startup instead of first audio frame."""
@@ -463,6 +506,19 @@ def preload_silero_vad():
     vad._load_silero()
     logging.info("Silero VAD preload complete.")
     return vad
+
+def preload_menu_rag():
+    """Load embeddings and index menu knowledge before the first customer turn."""
+    logging.info("Preloading menu RAG retriever...")
+    from voice_agent.data.factories import get_menu_retriever
+
+    retriever = get_menu_retriever()
+    retriever.ensure_index()
+    if retriever.client is None:
+        logging.info("Menu RAG preload completed with JSON catalog fallback.")
+    else:
+        logging.info("Menu RAG preload completed with Qdrant vector DB.")
+    return retriever
 
 def diarize_live_utterance(audio_data: np.ndarray, sess) -> dict:
     """Assign a live speaker cluster to one completed utterance."""
@@ -618,4 +674,6 @@ if __name__ == '__main__':
         os.getenv("GEMINI_LLM_MODEL"),
         os.getcwd(),
     )
+    if env_flag("PRELOAD_MENU_RAG", "1"):
+        preload_menu_rag()
     socketio.run(app, host=server_host, port=server_port, debug=debug, use_reloader=False, allow_unsafe_werkzeug=True)

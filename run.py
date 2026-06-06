@@ -8,7 +8,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # Load local environment variables (like GEMINI_API_KEY)
 load_dotenv(override=True)
 
-from app import app, env_flag, preload_silero_vad, preload_whisper_asr, socketio
+from app import app, env_flag, preload_menu_rag, preload_silero_vad, preload_whisper_asr, socketio
 
 if __name__ == '__main__':
     logging.info("Initializing Drive-Thru Voice Agent Runner...")
@@ -22,6 +22,8 @@ if __name__ == '__main__':
         preload_silero_vad()
     if env_flag("PRELOAD_WHISPER_ASR", "1"):
         preload_whisper_asr()
+    if env_flag("PRELOAD_MENU_RAG", "1"):
+        preload_menu_rag()
     server_host = os.getenv("SERVER_HOST", "0.0.0.0")
     server_port = int(os.getenv("SERVER_PORT", "5000"))
     debug = env_flag("DEBUG", "1")

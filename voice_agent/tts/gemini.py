@@ -11,10 +11,15 @@ from voice_agent.config import SAMPLE_RATE, get_gemini_api_key
 class GeminiTTS(BaseTTS):
     DEFAULT_MODEL = "gemini-3.1-flash-tts-preview"
     DEFAULT_VOICE = "Zephyr"
+    MODEL_ALIASES = {
+        "gemini-2.5-flash-tts": "gemini-2.5-flash-preview-tts",
+        "gemini-2.5-pro-tts": "gemini-2.5-pro-preview-tts",
+    }
 
     def __init__(self, api_key=None, model_name=None):
         self.api_key = api_key or get_gemini_api_key()
-        self.model_name = model_name or os.getenv("GEMINI_TTS_MODEL", self.DEFAULT_MODEL)
+        requested_model = (model_name or os.getenv("GEMINI_TTS_MODEL", self.DEFAULT_MODEL)).strip()
+        self.model_name = self.MODEL_ALIASES.get(requested_model, requested_model)
         self.client = None
         self.model = None
         
@@ -22,6 +27,12 @@ class GeminiTTS(BaseTTS):
             from google import genai
 
             self.client = genai.Client(api_key=self.api_key)
+            if requested_model != self.model_name:
+                logging.warning(
+                    "Gemini TTS model '%s' is an old alias; using '%s' instead.",
+                    requested_model,
+                    self.model_name,
+                )
             logging.info("Gemini TTS configured with google-genai model '%s'", self.model_name)
         else:
             logging.warning("No GEMINI_API_KEY set. GeminiTTS cannot synthesize audio.")
