@@ -31,30 +31,16 @@
     </header>
 
     <main class="dashboard-grid">
-        <!-- Panel 1: Simulation Control & Drive-Thru Lane -->
+        <!-- Panel 1: Session Control -->
         <section class="panel simulation-panel">
             <div class="panel-header">
-                <h2><i class="fa-solid fa-car"></i> Lane Simulation</h2>
+                <h2><i class="fa-solid fa-sliders"></i> Session Control</h2>
                 <div class="badge">L1 Hardware</div>
             </div>
-            
-            <div class="lane-view">
-                <div class="road">
-                    <div class="speaker-post" id="speaker-post">
-                        <div class="menu-board-glow"></div>
-                        <i class="fa-solid fa-volume-high speaker-icon"></i>
-                        <span class="speaker-label">Order Here</span>
-                        <div class="decibel-ring" id="decibel-ring"></div>
-                    </div>
-                    <div class="car" id="customer-car">
-                        <i class="fa-solid fa-car-side car-icon"></i>
-                    </div>
-                </div>
-            </div>
-            
+
             <div class="sim-actions">
                 <button id="btn-drive-car" class="btn btn-primary">
-                    <i class="fa-solid fa-road"></i> Drive Car to Speaker
+                    <i class="fa-solid fa-play"></i> Start Voice Session
                 </button>
                 <button id="btn-reset-session" class="btn btn-secondary">
                     <i class="fa-solid fa-arrows-rotate"></i> Reset Session
@@ -267,7 +253,7 @@
                     <h3>Dialogue Logs</h3>
                     <div class="logs-container" id="logs-container">
                         <div class="log-message system">
-                            <span class="time">[00:00:00]</span> Drive-Thru Voice Agent initialized. Click "Drive Car to Speaker" to begin.
+                            <span class="time">[00:00:00]</span> Drive-Thru Voice Agent initialized. Click "Start Voice Session" to begin.
                         </div>
                     </div>
                 </div>

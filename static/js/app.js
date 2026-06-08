@@ -8,9 +8,6 @@ const elBtnDriveCar = document.getElementById('btn-drive-car');
 const elBtnResetSession = document.getElementById('btn-reset-session');
 const elBtnMicToggle = document.getElementById('btn-mic-toggle');
 const elBtnSimulateVoice = document.getElementById('btn-simulate-voice');
-const elCustomerCar = document.getElementById('customer-car');
-const elSpeakerPost = document.getElementById('speaker-post');
-const elDecibelRing = document.getElementById('decibel-ring');
 
 const elRangeMu = document.getElementById('range-mu');
 const elValMu = document.getElementById('val-mu');
@@ -235,32 +232,23 @@ function drawWaveform(ctx, history, color) {
     ctx.stroke();
 }
 
-// Drive Car Animation Action
+// Start Session Action
 elBtnDriveCar.addEventListener('click', () => {
-    elCustomerCar.style.left = '45%'; // Position it at the speaker
     elBtnDriveCar.disabled = true;
-    logSystem("Car driving up to the speaker post...");
-    
-    // Trigger session startup on backend when car arrives
-    setTimeout(() => {
-        logSystem("Car arrived. Starting voice session...");
-        
-        socket.emit('start_session', {});
-        
-        // Enable buttons
-        elBtnMicToggle.disabled = false;
-        elBtnSimulateVoice.disabled = false;
-        elTextInput.disabled = false;
-        elBtnSendText.disabled = false;
-        elBtnSpeakerAnalytics.disabled = false;
-        elBtnResetSession.disabled = false;
-    }, 2500);
+    logSystem("Starting voice session...");
+
+    socket.emit('start_session', {});
+
+    elBtnMicToggle.disabled = false;
+    elBtnSimulateVoice.disabled = false;
+    elTextInput.disabled = false;
+    elBtnSendText.disabled = false;
+    elBtnSpeakerAnalytics.disabled = false;
+    elBtnResetSession.disabled = false;
 });
 
 // Reset Session Action
 elBtnResetSession.addEventListener('click', () => {
-    // Pull car back
-    elCustomerCar.style.left = '-80px';
     elBtnDriveCar.disabled = false;
     elBtnMicToggle.disabled = true;
     elBtnSimulateVoice.disabled = true;
@@ -279,7 +267,7 @@ elBtnResetSession.addEventListener('click', () => {
     updateCart({}, 0.0);
     elGuardrailAlert.style.display = 'none';
     
-    logSystem("Session reset. Lane is clear.");
+    logSystem("Session reset. Lane is ready.");
 });
 
 // Microphone Capture toggle
@@ -501,11 +489,7 @@ function playPCMAudio(audioBytes, sampleRate = 16000) {
     sourceNode.buffer = audioBuffer;
     sourceNode.connect(playContext.destination);
     
-    // Start speaker icon pulse animation
-    elDecibelRing.classList.add('pulse');
-    sourceNode.onended = () => {
-        elDecibelRing.classList.remove('pulse');
-    };
+    sourceNode.onended = () => {};
     
     sourceNode.start(0);
 }
