@@ -29,7 +29,7 @@ class SpeakerVerifier:
             "speechbrain",
         )
         cache_dir = os.path.join(cache_root, "spkrec-ecapa-voxceleb")
-        run_opts = {"device": device or ("cuda" if torch.cuda.is_available() else "cpu")}
+        run_opts = {"device": device or ("cuda:0" if torch.cuda.is_available() else "cpu")}
 
         logging.info("Loading SpeechBrain speaker model '%s'...", self.model_name)
         self.classifier = EncoderClassifier.from_hparams(

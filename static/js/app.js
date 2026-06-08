@@ -108,8 +108,9 @@ socket.on('agent_response', (data) => {
     
     // 2. Playback generated TTS audio
     const audioBytes = normalizeAudioPayload(data.audio);
+    let playbackPromise = Promise.resolve();
     if (audioBytes && audioBytes.byteLength > 0) {
-        playPCMAudio(audioBytes, data.audio_sample_rate || 16000);
+        playbackPromise = playPCMAudio(audioBytes, data.audio_sample_rate || 16000);
     }
     
     // 3. Highlight current LangGraph FSM Node
@@ -124,6 +125,14 @@ socket.on('agent_response', (data) => {
         elGuardrailMsg.innerText = `Off-menu item detected. Intercepted and corrected to: "${data.text}"`;
     } else {
         elGuardrailAlert.style.display = 'none';
+    }
+
+    if (data.node === 'closing' && isStreaming) {
+        playbackPromise.finally(() => {
+            stopMicStream({ finalize: false, reason: 'order_closed' });
+            elBtnMicToggle.disabled = true;
+            logSystem('Order closed. Microphone pipeline stopped.');
+        });
     }
 });
 
@@ -257,7 +266,7 @@ elBtnResetSession.addEventListener('click', () => {
     elBtnSpeakerAnalytics.disabled = true;
     
     if (isStreaming) {
-        stopMicStream();
+        stopMicStream({ finalize: false, reason: 'session_reset' });
     }
     
     socket.emit('reset_session');
@@ -273,7 +282,7 @@ elBtnResetSession.addEventListener('click', () => {
 // Microphone Capture toggle
 elBtnMicToggle.addEventListener('click', () => {
     if (isStreaming) {
-        stopMicStream();
+        logSystem('Microphone is already listening. Pause after each question to send it.');
     } else {
         startMicStream();
     }
@@ -281,6 +290,15 @@ elBtnMicToggle.addEventListener('click', () => {
 
 async function startMicStream() {
     try {
+        if (!window.isSecureContext) {
+            logSystem("Microphone requires a secure browser context. Open this app as http://localhost:5000 or http://127.0.0.1:5000, not 0.0.0.0 or a LAN IP unless HTTPS is enabled.");
+            return;
+        }
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            logSystem("Microphone capture is not available in this browser/context.");
+            return;
+        }
+
         const streamId = audioStreamId + 1;
         micStream = await navigator.mediaDevices.getUserMedia({
             audio: {
@@ -355,19 +373,35 @@ async function startMicStream() {
         isStreaming = true;
         socket.emit('audio_stream_started', { stream_id: streamId });
         elBtnMicToggle.classList.add('streaming');
-        elBtnMicToggle.innerHTML = '<i class="fa-solid fa-microphone-slash"></i> Stop Mic Stream';
+        elBtnMicToggle.innerHTML = '<i class="fa-solid fa-microphone-lines"></i> Listening';
         logSystem(`Microphone streaming active (${Math.round(inputSampleRate)} Hz captured, PCM-16 @ 16 kHz sent).`);
+        logSystem('Keep speaking naturally; each pause sends the current question.');
     } catch (e) {
         console.error("Microphone capture failed:", e);
-        logSystem(`Microphone access failed: ${e.message}`);
+        const permissionName = e.name || "MicrophoneError";
+        let help = e.message || "Unknown microphone error";
+        if (permissionName === "NotAllowedError" || permissionName === "SecurityError") {
+            help = "Permission denied by the browser or OS. Allow microphone access for this site, then reload the page.";
+        } else if (permissionName === "NotFoundError" || permissionName === "DevicesNotFoundError") {
+            help = "No microphone device was found.";
+        } else if (permissionName === "NotReadableError" || permissionName === "TrackStartError") {
+            help = "The microphone is busy in another app or blocked by the OS.";
+        }
+        logSystem(`Microphone access failed (${permissionName}): ${help}`);
     }
 }
 
-function stopMicStream() {
+function stopMicStream(options = {}) {
+    const finalize = options.finalize !== false;
+    const reason = options.reason || 'manual_stop';
     const streamId = audioStreamId;
     isStreaming = false;
     if (socket.connected) {
-        socket.emit('audio_stream_stopped', { stream_id: streamId });
+        socket.emit('audio_stream_stopped', {
+            stream_id: streamId,
+            finalize,
+            reason
+        });
     }
     elBtnMicToggle.classList.remove('streaming');
     elBtnMicToggle.innerHTML = '<i class="fa-solid fa-microphone"></i> Start Mic Stream';
@@ -489,9 +523,13 @@ function playPCMAudio(audioBytes, sampleRate = 16000) {
     sourceNode.buffer = audioBuffer;
     sourceNode.connect(playContext.destination);
     
-    sourceNode.onended = () => {};
-    
-    sourceNode.start(0);
+    return new Promise((resolve) => {
+        sourceNode.onended = () => {
+            resolve();
+        };
+
+        sourceNode.start(0);
+    });
 }
 
 // GUI Updates

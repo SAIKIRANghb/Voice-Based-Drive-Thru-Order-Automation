@@ -255,6 +255,7 @@ Important `.env` settings:
 | `PRELOAD_WHISPER_ASR` | Load Whisper at startup when using `run.py`. |
 | `PRELOAD_MENU_RAG` | Preload and index menu retrieval before the first customer turn. |
 | `LIVE_DIARIZATION` | Enable live speaker clustering for completed utterances. |
+| `SPEAKER_DEVICE` | Optional SpeechBrain/PyTorch device override for speaker embeddings, such as `cuda:0` or `cpu`. Leave empty to auto-select CUDA when PyTorch supports it. |
 | `SPEAKER_ENROLLMENT_PATH` | Optional JSON file of enrolled speaker embeddings. |
 | `QDRANT_URL` | Optional hosted Qdrant URL. Leave empty to use local embedded Qdrant. |
 | `QDRANT_API_KEY` | Optional API key for Qdrant Cloud or secured Qdrant. |
@@ -336,6 +337,18 @@ python scripts/preload_menu_rag.py
 Challenge: browser microphone streams do not stop synchronously. After the user resets the session, toggles the microphone, or starts a new lane run, an old `AudioWorklet` or socket callback can still deliver a few late `audio_frame` packets. Without a stream identifier, those stale packets look identical to frames from the current microphone stream. That can pollute the new utterance buffer, trigger VAD/ASR at the wrong time, or finalize speech for a stream the user already stopped.
 
 Solution: the frontend now increments a `streamId` each time `startMicStream()` creates a new microphone pipeline. It sends that id with `audio_stream_started`, every `audio_frame`, and `audio_stream_stopped`. The backend stores the active id in the per-client session as `audio_stream_id`, resets frame counters when a new stream starts, and ignores frames or stop events whose `stream_id` does not match the active stream. Session reset also clears the active stream state, so a restarted lane begins with clean audio/VAD/AEC buffers.
+
+### Browser microphone permission
+
+Challenge: microphone capture is granted by the browser before any audio reaches Flask, Whisper, VAD, or diarization. A page opened from an insecure origin such as a LAN IP over plain HTTP, a blocked site permission, a disabled OS-level microphone permission, or another app holding the device can all fail with a generic `Permission denied` message.
+
+Solution: open the dashboard as `http://localhost:5000` or `http://127.0.0.1:5000` for local development, or serve HTTPS for remote/LAN testing. The frontend checks for a secure browser context before calling `getUserMedia`, verifies that the MediaDevices API exists, and maps common browser errors such as `NotAllowedError`, `NotFoundError`, and `NotReadableError` to clearer dashboard messages.
+
+### ASR CUDA versus diarization CUDA
+
+Challenge: GPU ASR and GPU diarization use different runtime stacks. `faster-whisper` runs through CTranslate2, so Whisper can see CUDA even when PyTorch is CPU-only. Speaker diarization uses SpeechBrain ECAPA embeddings through PyTorch, so a CPU-only Torch install keeps diarization on CPU or fails when forced to CUDA.
+
+Solution: install a CUDA-enabled `torch` and matching `torchaudio` wheel in the project venv when SpeechBrain diarization should run on GPU. `voice_agent/spkrec/embedding.py` now defaults to `cuda:0` when `torch.cuda.is_available()` is true, otherwise CPU. Set `SPEAKER_DEVICE=cpu` to force CPU or `SPEAKER_DEVICE=cuda:0` to pin the GPU explicitly. The verifier helper uses the same override instead of masking CUDA with `CUDA_VISIBLE_DEVICES=""`.
 
 ### Microphone sample rate and VAD frame size
 

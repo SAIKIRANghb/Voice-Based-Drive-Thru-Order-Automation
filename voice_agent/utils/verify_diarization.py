@@ -34,11 +34,9 @@ def generate_voice_like_signal(pitch: float, duration_seconds: float, sample_rat
 
 def test_speaker_diarization():
     logging.info("Initializing SpeakerVerifier and SpeakerDiarizer...")
-    
-    os.environ["CUDA_VISIBLE_DEVICES"] = ""
-    
+
     try:
-        verifier = SpeakerVerifier(device="cpu")
+        verifier = SpeakerVerifier(device=os.getenv("SPEAKER_DEVICE") or None)
         diarizer = SpeakerDiarizer(verifier)
     except Exception as e:
         logging.error(f"Failed to load SpeechBrain models: {e}")

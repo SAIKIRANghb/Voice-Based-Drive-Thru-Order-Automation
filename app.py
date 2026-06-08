@@ -71,7 +71,10 @@ def get_speaker_verifier():
         from voice_agent.spkrec.embedding import SpeakerVerifier
 
         enrollment_path = os.getenv("SPEAKER_ENROLLMENT_PATH")
-        speaker_verifier = SpeakerVerifier(enrollment_path=enrollment_path)
+        speaker_verifier = SpeakerVerifier(
+            enrollment_path=enrollment_path,
+            device=os.getenv("SPEAKER_DEVICE") or None,
+        )
     return speaker_verifier
 
 def get_speaker_diarizer():
@@ -459,6 +462,8 @@ def handle_audio_stream_stopped(data=None):
     sess = get_session_components(sid)
     data = data or {}
     stream_id = int(data.get("stream_id") or sess.get("audio_stream_id") or 0)
+    should_finalize = data.get("finalize", True)
+    stop_reason = data.get("reason", "stopped")
     if stream_id != sess.get("audio_stream_id"):
         logging.debug("Ignoring stale audio stop for %s: stream=%s active=%s", sid, stream_id, sess.get("audio_stream_id"))
         return
@@ -466,9 +471,17 @@ def handle_audio_stream_stopped(data=None):
     sess["audio_streaming"] = False
     if not sess.get("session_active", False):
         return
+    if not should_finalize:
+        sess["mic_buffer"] = []
+        sess["is_speech_active"] = False
+        sess["silence_counter"] = 0
+        sess["silence_samples"] = 0
+        emit('asr_status', {"message": "Microphone pipeline closed with the order."})
+        logging.info("Audio stream %s stopped for %s without finalization: %s", stream_id, sid, stop_reason)
+        return
     if sess.get("is_speech_active") or sess.get("mic_buffer"):
         try:
-            finalize_buffered_speech(sid, sess, "stopped")
+            finalize_buffered_speech(sid, sess, stop_reason)
         except Exception as e:
             logging.exception("Audio stream stop finalization failed for %s", sid)
             emit('asr_status', {"message": f"Audio input was received but could not be transcribed: {e}"})
@@ -624,7 +637,7 @@ def handle_run_speaker_analytics():
         for item in diarize_results:
             idx = item["utterance_index"]
             utt = utterances[idx]
-            lbl = f"Speaker {item['cluster_id']}"
+            lbl = f"Speaker {item['cluster_id'] + 1}"
             if item["speaker_name"] != "unknown":
                 lbl += f" ({item['speaker_name']})"
             results.append({
